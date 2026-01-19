@@ -1,0 +1,683 @@
+
+local Config = {
+    AutoWin = false,
+    GodMode = false,
+    InfiniteJump = false,
+    SpeedHack = false,
+    NoClip = false,
+    AutoCollect = true,
+    AutoKeys = true,
+    AutoChests = true,
+    AutoAvoidEntities = true,
+    ESP = true,
+    AutoComplete = true,
+    
+    -- Anti-Cheat Settings
+    AntiCheatBypass = true,
+    UseMemoryPatches = true,
+    FakeLatency = true,
+    RandomDelays = true,
+    
+    -- Performance
+    UpdateInterval = 0.1,
+    ScanRadius = 500,
+    
+    -- Entities to avoid
+    AvoidEntities = {"Seek", "Rush", "Ambush", "Figure", "Screech", "Halt", "Eyes", "Timothy", "Glitch"},
+    
+    -- Room skipping
+    SkipRooms = {"Library", "Electrical", "The Greenhouse", "The Rooms"},
+    
+    -- Key locations
+    KeySpawnRooms = {"Room 50", "Room 100", "Room 150", "The Rooms"}
+}
+
+-- ANTI-CHEAT BYPASS SYSTEM
+local AntiCheat = {
+    Hooked = false,
+    PatchesApplied = false,
+    OriginalFunctions = {},
+    FakeData = {}
+}
+
+function AntiCheat:Initialize()
+    if self.Hooked then return true end
+    
+    warn("[DOORS AC] Initializing anti-cheat bypass...")
+    
+    -- Method 1: Hook critical functions
+    local success1 = self:HookFunctions()
+    
+    -- Method 2: Memory patches
+    local success2 = self:ApplyPatches()
+    
+    -- Method 3: Network manipulation
+    local success3 = self:SetupNetworkBypass()
+    
+    self.Hooked = success1 or success2 or success3
+    
+    if self.Hooked then
+        warn("[DOORS AC] ✅ Anti-cheat bypass activated!")
+    else
+        warn("[DOORS AC] ⚠️ Basic bypass only")
+    end
+    
+    return self.Hooked
+end
+
+function AntiCheat:HookFunctions()
+    local success = false
+    
+    -- Hook RemoteEvents
+    local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+    if remotes then
+        for _, remote in pairs(remotes:GetChildren()) do
+            if remote:IsA("RemoteEvent") then
+                self:HookRemote(remote)
+                success = true
+            end
+        end
+    end
+    
+    -- Hook specific Doors remotes
+    local specificRemotes = {
+        "DamagePlayer",
+        "KillPlayer", 
+        "UpdatePlayerData",
+        "EntityAttack",
+        "PlayerDeath"
+    }
+    
+    for _, remoteName in pairs(specificRemotes) do
+        local remote = game:GetService("ReplicatedStorage"):FindFirstChild(remoteName)
+        if remote and remote:IsA("RemoteEvent") then
+            self:HookRemote(remote)
+            success = true
+        end
+    end
+    
+    return success
+end
+
+function AntiCheat:HookRemote(remote)
+    local key = tostring(remote) .. "_FireServer"
+    self.OriginalFunctions[key] = remote.FireServer
+    
+    -- Hook via metatable
+    if getrawmetatable then
+        local mt = getrawmetatable(remote)
+        if mt then
+            local oldIndex = mt.__index
+            mt.__index = newcclosure(function(t, k)
+                if k == "FireServer" then
+                    return function(...)
+                        local args = {...}
+                        -- Modify arguments for bypass
+                        if Config.FakeLatency then
+                            task.wait(math.random(5, 20) / 1000)
+                        end
+                        return self.OriginalFunctions[key](unpack(args))
+                    end
+                end
+                return oldIndex(t, k)
+            end)
+        end
+    end
+end
+
+function AntiCheat:ApplyPatches()
+    -- Memory patching for client-side checks
+    if not (read_memory and write_memory) then
+        return false
+    end
+    
+    -- These are example addresses - real ones need to be found
+    local patches = {
+        -- Health check patch
+        {address = 0x7FF12345, original = {0x75, 0x10}, patch = {0xEB, 0x10}},
+        -- Speed check patch  
+        {address = 0x7FF12350, original = {0x74, 0x08}, patch = {0x90, 0x90}},
+        -- NoClip detection patch
+        {address = 0x7FF12360, original = {0x0F, 0x85}, patch = {0x90, 0xE9}}
+    }
+    
+    local applied = 0
+    for _, patch in pairs(patches) do
+        local success = pcall(function()
+            local current = read_memory(patch.address, #patch.original)
+            if current == patch.original then
+                write_memory(patch.address, patch.patch)
+                applied = applied + 1
+                self.FakeData[tostring(patch.address)] = patch.original
+            end
+        end)
+    end
+    
+    if applied > 0 then
+        warn("[DOORS AC] Applied", applied, "memory patches")
+    end
+    
+    return applied > 0
+end
+
+function AntiCheat:SetupNetworkBypass()
+    -- Fake latency and packet manipulation
+    if hookfunction then
+        -- Hook wait functions
+        local originalWait = task.wait
+        task.wait = function(seconds)
+            if Config.RandomDelays and seconds and seconds < 0.1 then
+                seconds = seconds + (math.random(-5, 5) / 1000)
+            end
+            return originalWait(seconds)
+        end
+        return true
+    end
+    return false
+end
+
+-- DOORS GAME MODULE
+local Doors = {
+    Player = game.Players.LocalPlayer,
+    Character = nil,
+    Humanoid = nil,
+    HumanoidRootPart = nil,
+    CurrentRoom = 0,
+    Entities = {},
+    Keys = {},
+    Chests = {},
+    Doors = {}
+}
+
+function Doors:Initialize()
+    -- Wait for character
+    if not self.Player.Character then
+        self.Player.CharacterAdded:Wait()
+    end
+    
+    self.Character = self.Player.Character
+    self.Humanoid = self.Character:WaitForChild("Humanoid")
+    self.HumanoidRootPart = self.Character:WaitForChild("HumanoidRootPart")
+    
+    warn("[DOORS] Player initialized:", self.Player.Name)
+    return true
+end
+
+function Doors:GetCurrentRoom()
+    -- Detect current room by position or environment
+    local position = self.HumanoidRootPart.Position
+    
+    -- Check room numbers in workspace
+    local rooms = workspace:FindFirstChild("Rooms")
+    if rooms then
+        for _, room in pairs(rooms:GetChildren()) do
+            if room:IsA("Model") and room.Name:find("Room") then
+                if room:FindFirstChild("Door") then
+                    local door = room.Door
+                    if door:IsA("Model") then
+                        local distance = (position - door.PrimaryPart.Position).Magnitude
+                        if distance < 50 then
+                            local roomNumber = tonumber(room.Name:match("%d+")) or 0
+                            self.CurrentRoom = roomNumber
+                            return roomNumber
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Estimate by position
+    if position.Z > 1000 then
+        self.CurrentRoom = math.floor(position.Z / 50)
+    else
+        self.CurrentRoom = math.floor(position.X / 50)
+    end
+    
+    return self.CurrentRoom
+end
+
+function Doors:ScanEntities()
+    self.Entities = {}
+    self.Keys = {}
+    self.Chests = {}
+    self.Doors = {}
+    
+    -- Scan for entities
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") then
+            local name = obj.Name
+            
+            -- Check for entities
+            for _, entity in pairs(Config.AvoidEntities) do
+                if name:find(entity) then
+                    table.insert(self.Entities, {Object = obj, Type = entity, Position = obj.PrimaryPart and obj.PrimaryPart.Position})
+                end
+            end
+            
+            -- Check for keys
+            if name:find("Key") or name:find("Keycard") then
+                table.insert(self.Keys, {Object = obj, Position = obj.PrimaryPart and obj.PrimaryPart.Position})
+            end
+            
+            -- Check for chests
+            if name:find("Chest") or name:find("Drawer") then
+                table.insert(self.Chests, {Object = obj, Position = obj.PrimaryPart and obj.PrimaryPart.Position})
+            end
+            
+            -- Check for doors
+            if name:find("Door") and obj:FindFirstChild("Door") then
+                table.insert(self.Doors, {Object = obj, Position = obj.PrimaryPart and obj.PrimaryPart.Position})
+            end
+        end
+    end
+    
+    return #self.Entities, #self.Keys, #self.Chests, #self.Doors
+end
+
+function Doors:AvoidEntity(entity)
+    if not entity or not entity.Position then return end
+    
+    local distance = (self.HumanoidRootPart.Position - entity.Position).Magnitude
+    
+    if distance < 30 then
+        -- Move away from entity
+        local direction = (self.HumanoidRootPart.Position - entity.Position).Unit
+        local newPosition = self.HumanoidRootPart.Position + (direction * 50)
+        
+        -- Teleport away
+        self.HumanoidRootPart.CFrame = CFrame.new(newPosition)
+        
+        warn("[DOORS] Avoided entity:", entity.Type)
+        return true
+    end
+    
+    return false
+end
+
+function Doors:CollectKey(key)
+    if not key or not key.Position then return false end
+    
+    local distance = (self.HumanoidRootPart.Position - key.Position).Magnitude
+    
+    if distance > 10 then
+        -- Move to key
+        self.HumanoidRootPart.CFrame = CFrame.new(key.Position + Vector3.new(0, 3, 0))
+        task.wait(0.1)
+    end
+    
+    -- Simulate collection
+    if key.Object:FindFirstChildOfClass("ProximityPrompt") then
+        fireproximityprompt(key.Object:FindFirstChildOfClass("ProximityPrompt"))
+    else
+        -- Direct collection
+        key.Object.CFrame = self.HumanoidRootPart.CFrame
+    end
+    
+    task.wait(0.1)
+    warn("[DOORS] Collected key")
+    return true
+end
+
+function Doors:OpenChest(chest)
+    if not chest or not chest.Position then return false end
+    
+    local distance = (self.HumanoidRootPart.Position - chest.Position).Magnitude
+    
+    if distance > 10 then
+        self.HumanoidRootPart.CFrame = CFrame.new(chest.Position + Vector3.new(0, 3, 0))
+        task.wait(0.1)
+    end
+    
+    if chest.Object:FindFirstChildOfClass("ProximityPrompt") then
+        fireproximityprompt(chest.Object:FindFirstChildOfClass("ProximityPrompt"))
+    end
+    
+    task.wait(0.1)
+    warn("[DOORS] Opened chest")
+    return true
+end
+
+function Doors:OpenDoor(door)
+    if not door or not door.Position then return false end
+    
+    local distance = (self.HumanoidRootPart.Position - door.Position).Magnitude
+    
+    if distance > 10 then
+        self.HumanoidRootPart.CFrame = CFrame.new(door.Position + Vector3.new(0, 3, 0))
+        task.wait(0.1)
+    end
+    
+    if door.Object:FindFirstChildOfClass("ProximityPrompt") then
+        fireproximityprompt(door.Object:FindFirstChildOfClass("ProximityPrompt"))
+    else
+        -- Try to find door handle
+        for _, part in pairs(door.Object:GetDescendants()) do
+            if part.Name:find("Handle") or part.Name:find("Knob") then
+                part.CFrame = self.HumanoidRootPart.CFrame
+                break
+            end
+        end
+    end
+    
+    task.wait(0.1)
+    warn("[DOORS] Opened door")
+    return true
+end
+
+function Doors:EnableGodMode()
+    if Config.GodMode then
+        -- Make character invincible
+        self.Humanoid.MaxHealth = math.huge
+        self.Humanoid.Health = math.huge
+        
+        -- Hook damage events
+        local function preventDamage()
+            return nil
+        end
+        
+        -- Try to hook damage function
+        pcall(function()
+            game:GetService("ReplicatedStorage").Remotes.DamagePlayer.OnClientEvent:Connect(preventDamage)
+        end)
+        
+        warn("[DOORS] God Mode enabled")
+    end
+end
+
+function Doors:EnableInfiniteJump()
+    if Config.InfiniteJump then
+        local UIS = game:GetService("UserInputService")
+        local canJump = true
+        
+        UIS.InputBegan:Connect(function(input, processed)
+            if not processed then
+                if input.KeyCode == Enum.KeyCode.Space then
+                    if canJump then
+                        self.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                        canJump = false
+                        task.wait(0.1)
+                        canJump = true
+                    end
+                end
+            end
+        end)
+        
+        warn("[DOORS] Infinite Jump enabled")
+    end
+end
+
+function Doors:EnableSpeedHack()
+    if Config.SpeedHack then
+        self.Humanoid.WalkSpeed = 50
+        warn("[DOORS] Speed Hack enabled (50 speed)")
+    end
+end
+
+function Doors:EnableNoClip()
+    if Config.NoClip then
+        -- Make parts not collide
+        for _, part in pairs(self.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+        
+        -- Keep updating
+        spawn(function()
+            while Config.NoClip do
+                for _, part in pairs(self.Character:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+                task.wait(0.1)
+            end
+        end)
+        
+        warn("[DOORS] NoClip enabled")
+    end
+end
+
+-- ESP SYSTEM
+local ESP = {
+    Enabled = false,
+    Boxes = {},
+    TextLabels = {},
+    Tracers = {}
+}
+
+function ESP:Toggle(state)
+    self.Enabled = state
+    
+    if state then
+        self:CreateESP()
+    else
+        self:ClearESP()
+    end
+end
+
+function ESP:CreateESP()
+    -- Clear existing
+    self:ClearESP()
+    
+    -- Create ESP for entities
+    for _, entity in pairs(Doors.Entities) do
+        if entity.Object and entity.Object.PrimaryPart then
+            self:CreateBox(entity.Object, Color3.fromRGB(255, 0, 0), entity.Type)
+        end
+    end
+    
+    -- Create ESP for keys
+    for _, key in pairs(Doors.Keys) do
+        if key.Object and key.Object.PrimaryPart then
+            self:CreateBox(key.Object, Color3.fromRGB(0, 255, 0), "KEY")
+        end
+    end
+    
+    -- Create ESP for chests
+    for _, chest in pairs(Doors.Chests) do
+        if chest.Object and chest.Object.PrimaryPart then
+            self:CreateBox(chest.Object, Color3.fromRGB(255, 255, 0), "CHEST")
+        end
+    end
+end
+
+function ESP:CreateBox(obj, color, name)
+    local box = Instance.new("BoxHandleAdornment")
+    box.Name = "ESP_" .. name
+    box.Adornee = obj.PrimaryPart
+    box.Color3 = color
+    box.Transparency = 0.7
+    box.Size = obj.PrimaryPart.Size * 1.2
+    box.ZIndex = 10
+    box.Parent = obj.PrimaryPart
+    
+    local label = Instance.new("BillboardGui")
+    label.Name = "ESP_Label"
+    label.Size = UDim2.new(0, 100, 0, 50)
+    label.StudsOffset = Vector3.new(0, 3, 0)
+    label.AlwaysOnTop = true
+    label.Parent = obj.PrimaryPart
+    
+    local text = Instance.new("TextLabel")
+    text.Text = name
+    text.Size = UDim2.new(1, 0, 1, 0)
+    text.BackgroundTransparency = 1
+    text.TextColor3 = color
+    text.TextSize = 14
+    text.Font = Enum.Font.GothamBold
+    text.Parent = label
+    
+    table.insert(self.Boxes, box)
+    table.insert(self.TextLabels, label)
+end
+
+function ESP:ClearESP()
+    for _, box in pairs(self.Boxes) do
+        pcall(function() box:Destroy() end)
+    end
+    for _, label in pairs(self.TextLabels) do
+        pcall(function() label:Destroy() end)
+    end
+    for _, tracer in pairs(self.Tracers) do
+        pcall(function() tracer:Destroy() end)
+    end
+    
+    self.Boxes = {}
+    self.TextLabels = {}
+    self.Tracers = {}
+end
+
+-- MAIN AUTO WIN SYSTEM
+local AutoWin = {
+    Running = false,
+    CompletedRooms = 0,
+    StartTime = os.time()
+}
+
+function AutoWin:Start()
+    if self.Running then
+        warn("[AUTO WIN] Already running")
+        return
+    end
+    
+    Config.AutoWin = true
+    self.Running = true
+    self.StartTime = os.time()
+    
+    warn("[AUTO WIN] Starting auto win sequence...")
+    
+    -- Enable all hacks
+    Doors:EnableGodMode()
+    Doors:EnableInfiniteJump()
+    Doors:EnableSpeedHack()
+    Doors:EnableNoClip()
+    
+    if Config.ESP then
+        ESP:Toggle(true)
+    end
+    
+    -- Main loop
+    spawn(function()
+        while self.Running and Config.AutoWin do
+            -- Scan environment
+            local entityCount, keyCount, chestCount, doorCount = Doors:ScanEntities()
+            
+            -- Update current room
+            local room = Doors:GetCurrentRoom()
+            
+            -- Avoid entities
+            if Config.AutoAvoidEntities then
+                for _, entity in pairs(Doors.Entities) do
+                    Doors:AvoidEntity(entity)
+                end
+            end
+            
+            -- Collect keys
+            if Config.AutoKeys and keyCount > 0 then
+                for _, key in pairs(Doors.Keys) do
+                    Doors:CollectKey(key)
+                end
+            end
+            
+            -- Open chests
+            if Config.AutoChests and chestCount > 0 then
+                for _, chest in pairs(Doors.Chests) do
+                    Doors:OpenChest(chest)
+                end
+            end
+            
+            -- Open doors (auto progress)
+            if doorCount > 0 then
+                for _, door in pairs(Doors.Doors) do
+                    Doors:OpenDoor(door)
+                end
+            end
+            
+            -- Move forward automatically
+            if Config.AutoComplete then
+                local forwardVector = Doors.HumanoidRootPart.CFrame.LookVector
+                Doors.HumanoidRootPart.CFrame = Doors.HumanoidRootPart.CFrame + (forwardVector * 5)
+            end
+            
+            -- Update ESP
+            if Config.ESP then
+                ESP:CreateESP()
+            end
+            
+            task.wait(Config.UpdateInterval)
+        end
+        
+        self.Running = false
+        warn("[AUTO WIN] Stopped")
+    end)
+end
+
+function AutoWin:Stop()
+    self.Running = false
+    Config.AutoWin = false
+    
+    -- Disable ESP
+    ESP:Toggle(false)
+    
+    -- Reset hacks
+    if Doors.Humanoid then
+        Doors.Humanoid.WalkSpeed = 16
+    end
+    
+    warn("[AUTO WIN] Stopped auto win")
+end
+
+-- GUI SYSTEM
+local GUI = {}
+function GUI:Create()
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "DoorsAutoWinGUI"
+    ScreenGui.Parent = game:GetService("CoreGui")
+    
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Size = UDim2.new(0, 400, 0, 500)
+    MainFrame.Position = UDim2.new(0.5, -200, 0.5, -250)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    MainFrame.Parent = ScreenGui
+    
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 12)
+    UICorner.Parent = MainFrame
+    
+    -- Title
+    local Title = Instance.new("TextLabel")
+    Title.Text = "🚪 DOORS AUTO WIN v10.0"
+    Title.Size = UDim2.new(1, 0, 0, 50)
+    Title.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+    Title.TextColor3 = Color3.new(1, 1, 1)
+    Title.Font = Enum.Font.GothamBlack
+    Title.TextSize = 20
+    Title.Parent = MainFrame
+    
+    -- Status
+    local Status = Instance.new("TextLabel")
+    Status.Text = "Status: Ready"
+    Status.Size = UDim2.new(1, -20, 0, 40)
+    Status.Position = UDim2.new(0, 10, 0, 60)
+    Status.BackgroundTransparency = 1
+    Status.TextColor3 = Color3.new(1, 1, 1)
+    Status.Font = Enum.Font.Gotham
+    Status.Parent = MainFrame
+    
+    -- Buttons
+    local StartButton = Instance.new("TextButton")
+    StartButton.Text = "▶ START AUTO WIN"
+    StartButton.Size = UDim2.new(1, -20, 0, 50)
+    StartButton.Position = UDim2.new(0, 10, 0, 110)
+    StartButton.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+    StartButton.TextColor3 = Color3.new(1, 1, 1)
+    StartButton.Font = Enum.Font.GothamBold
+    StartButton.Parent = MainFrame
+    
+    local StopButton = Instance.new("TextButton")
+    StopButton.Text = "⏹ STOP AUTO WIN"
+    StopButton.Size = UDim2.new(1, -20, 0, 50)
+    StopButton.Position = UDim2.new(0, 10, 0, 170)
+    StopButton.BackgroundC
